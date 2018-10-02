@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "platform/win/launcher_win.h"
 
 #include "core/crash_reports.h"
+#include "core/update_checker.h"
 #include "platform/platform_specific.h"
 
 #include <windows.h>
@@ -39,7 +40,7 @@ Launcher::Launcher(int argc, char *argv[])
 : Core::Launcher(argc, argv, DeviceModel(), SystemVersion()) {
 }
 
-base::optional<QStringList> Launcher::readArgumentsHook(
+std::optional<QStringList> Launcher::readArgumentsHook(
 		int argc,
 		char *argv[]) const {
 	auto count = 0;
@@ -54,7 +55,7 @@ base::optional<QStringList> Launcher::readArgumentsHook(
 			return result;
 		}
 	}
-	return base::none;
+	return std::nullopt;
 }
 
 bool Launcher::launchUpdater(UpdaterLaunch action) {
@@ -89,6 +90,11 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 	if (cTestMode()) {
 		pushArgument(qsl("-testmode"));
 	}
+#ifndef TDESKTOP_DISABLE_AUTOUPDATE
+	if (Core::UpdaterDisabled()) {
+		pushArgument(qsl("-externalupdater"));
+	}
+#endif // !TDESKTOP_DISABLE_AUTOUPDATE
 	if (customWorkingDir()) {
 		pushArgument(qsl("-workdir"));
 		pushArgument('"' + cWorkingDir() + '"');

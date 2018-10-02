@@ -22,6 +22,7 @@ struct MessageGroupId;
 struct SendingAlbum;
 enum class SendMediaType;
 struct FileLoadTo;
+class mtpFileLoader;
 
 namespace InlineBots {
 class Result;
@@ -35,6 +36,10 @@ struct PreparedList;
 namespace Dialogs {
 class Key;
 } // namespace Dialogs
+
+namespace Core {
+struct CloudPasswordState;
+} // namespace Core
 
 namespace Api {
 
@@ -54,7 +59,6 @@ inline int32 CountHash(IntRange &&range) {
 	}
 	return int32(acc & 0x7FFFFFFF);
 }
-
 
 } // namespace Api
 
@@ -80,7 +84,9 @@ public:
 	void requestContacts();
 	void requestDialogEntry(not_null<Data::Feed*> feed);
 	//void requestFeedDialogsEntries(not_null<Data::Feed*> feed);
-	void requestDialogEntry(not_null<History*> history);
+	void requestDialogEntry(
+		not_null<History*> history,
+		Fn<void()> callback = nullptr);
 	//void applyFeedSources(const MTPDchannels_feedSources &data); // #feed
 	//void setFeedChannels(
 	//	not_null<Data::Feed*> feed,
@@ -96,6 +102,17 @@ public:
 	void requestAdmins(not_null<ChannelData*> channel);
 	void requestParticipantsCountDelayed(not_null<ChannelData*> channel);
 	void requestChannelRangeDifference(not_null<History*> history);
+
+	using UpdatedFileReferences = Data::UpdatedFileReferences;
+	using FileReferencesHandler = FnMut<void(const UpdatedFileReferences&)>;
+	void refreshFileReference(
+		Data::FileOrigin origin,
+		FileReferencesHandler &&handler);
+	void refreshFileReference(
+		Data::FileOrigin origin,
+		not_null<mtpFileLoader*> loader,
+		int requestId,
+		const QByteArray &current);
 
 	void requestChangelog(
 		const QString &sinceVersion,
@@ -145,6 +162,14 @@ public:
 		const MTPInputStickerSet &set);
 	std::vector<not_null<DocumentData*>> *stickersByEmoji(
 		not_null<EmojiPtr> emoji);
+	void toggleFavedSticker(
+		not_null<DocumentData*> document,
+		Data::FileOrigin origin,
+		bool faved);
+	void toggleSavedGif(
+		not_null<DocumentData*> document,
+		Data::FileOrigin origin,
+		bool saved);
 
 	void joinChannel(not_null<ChannelData*> channel);
 	void leaveChannel(not_null<ChannelData*> channel);
@@ -159,7 +184,9 @@ public:
 
 	void savePrivacy(const MTPInputPrivacyKey &key, QVector<MTPInputPrivacyRule> &&rules);
 	void handlePrivacyChange(mtpTypeId keyTypeId, const MTPVector<MTPPrivacyRule> &rules);
-	int onlineTillFromStatus(const MTPUserStatus &status, int currentOnlineTill);
+	static int OnlineTillFromStatus(
+		const MTPUserStatus &status,
+		int currentOnlineTill);
 
 	void clearHistory(not_null<PeerData*> peer);
 
@@ -279,7 +306,7 @@ public:
 	void sendUploadedDocument(
 		FullMsgId localId,
 		const MTPInputFile &file,
-		const base::optional<MTPInputFile> &thumb,
+		const std::optional<MTPInputFile> &thumb,
 		bool silent);
 	void cancelLocalItem(not_null<HistoryItem*> item);
 
@@ -297,6 +324,47 @@ public:
 		not_null<UserData*> bot,
 		not_null<InlineBots::Result*> data,
 		const SendOptions &options);
+	void sendExistingDocument(
+		not_null<DocumentData*> document,
+		Data::FileOrigin origin,
+		TextWithEntities caption,
+		const SendOptions &options);
+
+	void requestSupportContact(FnMut<void(const MTPUser&)> callback);
+
+	void uploadPeerPhoto(not_null<PeerData*> peer, QImage &&image);
+	void clearPeerPhoto(not_null<PhotoData*> photo);
+
+	void reloadPasswordState();
+	void clearUnconfirmedPassword();
+	rpl::producer<Core::CloudPasswordState> passwordState() const;
+	std::optional<Core::CloudPasswordState> passwordStateCurrent() const;
+
+	void saveSelfBio(const QString &text, FnMut<void()> done);
+
+	struct Privacy {
+		enum class Key {
+			LastSeen,
+			Calls,
+			Invites,
+		};
+		enum class Option {
+			Everyone,
+			Contacts,
+			Nobody,
+		};
+		Option option = Option::Everyone;
+		std::vector<not_null<UserData*>> always;
+		std::vector<not_null<UserData*>> never;
+
+		static MTPInputPrivacyKey Input(Key key);
+	};
+	void reloadPrivacy(Privacy::Key key);
+	rpl::producer<Privacy> privacyValue(Privacy::Key key);
+
+	void reloadSelfDestruct();
+	rpl::producer<int> selfDestructValue() const;
+	void saveSelfDestruct(int days);
 
 	~ApiWrap();
 
@@ -314,6 +382,10 @@ private:
 		int32 hash = 0;
 		TimeMs received = 0;
 	};
+
+	using SimpleFileLocationId = Data::SimpleFileLocationId;
+	using DocumentFileLocationId = Data::DocumentFileLocationId;
+	using FileLocationId = Data::FileLocationId;
 
 	void updatesReceived(const MTPUpdates &updates);
 	void checkQuitPreventFinished();
@@ -469,6 +541,22 @@ private:
 
 	void sendNotifySettingsUpdates();
 
+	template <typename Request>
+	void requestFileReference(
+		Data::FileOrigin origin,
+		FileReferencesHandler &&handler,
+		Request &&data);
+
+	void photoUploadReady(const FullMsgId &msgId, const MTPInputFile &file);
+
+	Privacy parsePrivacy(const QVector<MTPPrivacyRule> &rules);
+	void pushPrivacy(
+		Privacy::Key key,
+		const QVector<MTPPrivacyRule> &rules);
+	void updatePrivacyLastSeens(const QVector<MTPPrivacyRule> &rules);
+
+	void setSelfDestructDays(int days);
+
 	not_null<AuthSession*> _session;
 
 	MessageDataRequests _messageDataRequests;
@@ -536,7 +624,9 @@ private:
 	mtpRequestId _contactsRequestId = 0;
 	mtpRequestId _contactsStatusesRequestId = 0;
 	base::flat_set<not_null<Data::Feed*>> _dialogFeedRequests;
-	base::flat_set<not_null<History*>> _dialogRequests;
+	base::flat_map<
+		not_null<History*>,
+		std::vector<Fn<void()>>> _dialogRequests;
 
 	base::flat_map<not_null<History*>, mtpRequestId> _unreadMentionsRequests;
 
@@ -605,9 +695,33 @@ private:
 	base::flat_set<not_null<const PeerData*>> _updateNotifySettingsPeers;
 	base::Timer _updateNotifySettingsTimer;
 
+	std::map<
+		Data::FileOrigin,
+		std::vector<FileReferencesHandler>> _fileReferenceHandlers;
+
 	mtpRequestId _deepLinkInfoRequestId = 0;
 
 	TimeMs _termsUpdateSendAt = 0;
 	mtpRequestId _termsUpdateRequestId = 0;
+
+	std::vector<FnMut<void(const MTPUser &)>> _supportContactCallbacks;
+
+	base::flat_map<FullMsgId, not_null<PeerData*>> _peerPhotoUploads;
+
+	mtpRequestId _passwordRequestId = 0;
+	std::unique_ptr<Core::CloudPasswordState> _passwordState;
+	rpl::event_stream<Core::CloudPasswordState> _passwordStateChanges;
+
+	mtpRequestId _saveBioRequestId = 0;
+	FnMut<void()> _saveBioDone;
+	QString _saveBioText;
+
+	base::flat_map<Privacy::Key, mtpRequestId> _privacyRequestIds;
+	base::flat_map<Privacy::Key, Privacy> _privacyValues;
+	std::map<Privacy::Key, rpl::event_stream<Privacy>> _privacyChanges;
+
+	mtpRequestId _selfDestructRequestId = 0;
+	std::optional<int> _selfDestructDays;
+	rpl::event_stream<int> _selfDestructChanges;
 
 };

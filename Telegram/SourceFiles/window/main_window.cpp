@@ -101,7 +101,7 @@ void MainWindow::checkLockByTerms() {
 		if (AuthSession::Exists()) {
 			Auth().api().acceptTerms(id);
 			if (!mention.isEmpty()) {
-				MentionClickHandler(mention).onClick(Qt::LeftButton);
+				MentionClickHandler(mention).onClick({});
 			}
 		}
 		Messenger::Instance().unlockTerms();
@@ -427,7 +427,6 @@ void MainWindow::reActivateWindow() {
 			if (auto f = QApplication::focusWidget()) {
 				f->clearFocus();
 			}
-			windowHandle()->requestActivate();
 			w->activate();
 			if (auto f = QApplication::focusWidget()) {
 				f->clearFocus();

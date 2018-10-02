@@ -36,15 +36,11 @@
         },
       },
     },
-    'mac_bundle': '1',
-    'mac_bundle_resources': [
-      '<!@(python -c "for s in \'<@(langpacks)\'.split(\' \'): print(\'<(res_loc)/langs/\' + s + \'.lproj/Localizable.strings\')")',
-      '../Telegram/Images.xcassets',
-    ],
   }], [ 'build_macold', {
     'xcode_settings': {
       'OTHER_CPLUSPLUSFLAGS': [ '-nostdinc++' ],
       'OTHER_LDFLAGS': [
+        '-isysroot', '/',
         '-lbase',
         '-lcrashpad_client',
         '-lcrashpad_util',
@@ -60,14 +56,11 @@
         '/usr/local/macold/lib/libexif.a',
         '/usr/local/macold/lib/libc++.a',
         '/usr/local/macold/lib/libc++abi.a',
-        '<(libs_loc)/macold/openssl/libssl.a',
-        '<(libs_loc)/macold/openssl/libcrypto.a',
       ],
     },
     'include_dirs': [
       '/usr/local/macold',
       '/usr/local/macold/include/c++/v1',
-      '<(libs_loc)/macold/openssl/include',
       '<(libs_loc)/macold/libexif-0.6.20',
       '<(libs_loc)/macold/crashpad',
       '<(libs_loc)/macold/crashpad/third_party/mini_chromium/mini_chromium',
@@ -127,14 +120,11 @@
         '/usr/local/lib/libavutil.a',
         '/usr/local/lib/libswscale.a',
         '/usr/local/lib/libswresample.a',
-        '<(libs_loc)/openssl/libssl.a',
-        '<(libs_loc)/openssl/libcrypto.a',
       ],
     },
     'include_dirs': [
       '<(libs_loc)/crashpad',
       '<(libs_loc)/crashpad/third_party/mini_chromium/mini_chromium',
-      '<(libs_loc)/openssl/include'
     ],
     'configurations': {
       'Debug': {

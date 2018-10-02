@@ -258,7 +258,7 @@ void StickersListWidget::Footer::enumerateVisibleIcons(Callback callback) {
 void StickersListWidget::Footer::preloadImages() {
 	enumerateVisibleIcons([](const StickerIcon &icon, int x) {
 		if (auto sticker = icon.sticker) {
-			sticker->thumb->load();
+			sticker->thumb->load(sticker->stickerSetOrigin());
 		}
 	});
 }
@@ -628,8 +628,9 @@ void StickersListWidget::Footer::paintSetIcon(
 		const StickerIcon &icon,
 		int x) const {
 	if (icon.sticker) {
-		icon.sticker->thumb->load();
-		auto pix = icon.sticker->thumb->pix(icon.pixw, icon.pixh);
+		const auto origin = icon.sticker->stickerSetOrigin();
+		icon.sticker->thumb->load(origin);
+		auto pix = icon.sticker->thumb->pix(origin, icon.pixw, icon.pixh);
 
 		p.drawPixmapLeft(x + (st::stickerIconWidth - icon.pixw) / 2, _iconsTop + (st::emojiFooterHeight - icon.pixh) / 2, width(), pix);
 	} else if (icon.megagroup) {
@@ -652,6 +653,9 @@ void StickersListWidget::Footer::paintSetIcon(
 }
 
 void StickersListWidget::Footer::step_icons(TimeMs ms, bool timer) {
+	if (anim::Disabled()) {
+		ms += st::stickerIconMove;
+	}
 	if (_iconsStartAnim) {
 		auto dt = (ms - _iconsStartAnim) / float64(st::stickerIconMove);
 		if (dt >= 1) {
@@ -1306,8 +1310,8 @@ void StickersListWidget::paintMegagroupEmptySet(Painter &p, int y, bool buttonSe
 }
 
 void StickersListWidget::paintSticker(Painter &p, Set &set, int y, int index, bool selected, bool deleteSelected) {
-	auto sticker = set.pack[index];
-	if (!sticker->sticker()) return;
+	auto document = set.pack[index];
+	if (!document->sticker()) return;
 
 	int row = (index / _columnCount), col = (index % _columnCount);
 
@@ -1318,30 +1322,26 @@ void StickersListWidget::paintSticker(Painter &p, Set &set, int y, int index, bo
 		App::roundRect(p, QRect(tl, _singleSize), st::emojiPanHover, StickerHoverCorners);
 	}
 
-	const auto goodThumb = sticker->hasGoodStickerThumb();
-	if (goodThumb) {
-		sticker->thumb->load();
-	} else {
-		sticker->checkSticker();
-	}
+	document->checkStickerThumb();
 
-	auto coef = qMin((_singleSize.width() - st::buttonRadius * 2) / float64(sticker->dimensions.width()), (_singleSize.height() - st::buttonRadius * 2) / float64(sticker->dimensions.height()));
+	auto coef = qMin((_singleSize.width() - st::buttonRadius * 2) / float64(document->dimensions.width()), (_singleSize.height() - st::buttonRadius * 2) / float64(document->dimensions.height()));
 	if (coef > 1) coef = 1;
-	auto w = qMax(qRound(coef * sticker->dimensions.width()), 1);
-	auto h = qMax(qRound(coef * sticker->dimensions.height()), 1);
+	auto w = qMax(qRound(coef * document->dimensions.width()), 1);
+	auto h = qMax(qRound(coef * document->dimensions.height()), 1);
 	auto ppos = pos + QPoint((_singleSize.width() - w) / 2, (_singleSize.height() - h) / 2);
-	auto paintImage = [&](ImagePtr image) {
+	if (const auto image = document->getStickerThumb()) {
 		if (image->loaded()) {
 			p.drawPixmapLeft(
 				ppos,
 				width(),
-				image->pixSingle(w, h, w, h, ImageRoundRadius::None));
+				image->pixSingle(
+					document->stickerSetOrigin(),
+					w,
+					h,
+					w,
+					h,
+					ImageRoundRadius::None));
 		}
-	};
-	if (goodThumb) {
-		paintImage(sticker->thumb);
-	} else if (!sticker->sticker()->img->isNull()) {
-		paintImage(sticker->sticker()->img);
 	}
 
 	if (selected && stickerHasDeleteButton(set, index)) {
@@ -1498,7 +1498,7 @@ void StickersListWidget::mouseReleaseEvent(QMouseEvent *e) {
 	_previewTimer.stop();
 
 	auto pressed = _pressed;
-	setPressed(base::none);
+	setPressed(std::nullopt);
 	if (pressed != _selected) {
 		update();
 	}
@@ -1609,8 +1609,10 @@ void StickersListWidget::removeFavedSticker(int section, int index) {
 	clearSelection();
 	auto sticker = _mySets[section].pack[index];
 	Stickers::SetFaved(sticker, false);
-	auto unfave = true;
-	MTP::send(MTPmessages_FaveSticker(sticker->mtpInput(), MTP_bool(unfave)));
+	Auth().api().toggleFavedSticker(
+		sticker,
+		Data::FileOriginStickerSet(Stickers::FavedSetId, 0),
+		false);
 }
 
 void StickersListWidget::setColumnCount(int count) {
@@ -1650,8 +1652,8 @@ void StickersListWidget::enterFromChildEvent(QEvent *e, QWidget *child) {
 }
 
 void StickersListWidget::clearSelection() {
-	setPressed(base::none);
-	setSelected(base::none);
+	setPressed(std::nullopt);
+	setSelected(std::nullopt);
 	update();
 }
 
@@ -1764,15 +1766,10 @@ void StickersListWidget::preloadImages() {
 		for (int j = 0; j != count; ++j) {
 			if (++k > _columnCount * (_columnCount + 1)) break;
 
-			auto sticker = sets[i].pack.at(j);
-			if (!sticker || !sticker->sticker()) continue;
+			const auto document = sets[i].pack[j];
+			if (!document || !document->sticker()) continue;
 
-			const auto goodThumb = sticker->hasGoodStickerThumb();
-			if (goodThumb) {
-				sticker->thumb->load();
-			} else {
-				sticker->automaticLoad(0);
-			}
+			document->checkStickerThumb();
 		}
 		if (k > _columnCount * (_columnCount + 1)) break;
 	}
@@ -2061,7 +2058,7 @@ void StickersListWidget::updateSelected() {
 		return;
 	}
 
-	auto newSelected = OverState { base::none };
+	auto newSelected = OverState { std::nullopt };
 	auto p = mapFromGlobal(_lastMousePosition);
 	if (!rect().contains(p)
 		|| p.y() < getVisibleTop() || p.y() >= getVisibleBottom()
@@ -2162,7 +2159,9 @@ void StickersListWidget::setSelected(OverState newSelected) {
 				Assert(sticker->section >= 0 && sticker->section < sets.size());
 				auto &set = sets[sticker->section];
 				Assert(sticker->index >= 0 && sticker->index < set.pack.size());
-				Ui::showMediaPreview(set.pack[sticker->index]);
+				Ui::showMediaPreview(
+					set.pack[sticker->index]->stickerSetOrigin(),
+					set.pack[sticker->index]);
 			}
 		}
 	}
@@ -2178,7 +2177,9 @@ void StickersListWidget::onPreview() {
 		Assert(sticker->section >= 0 && sticker->section < sets.size());
 		auto &set = sets[sticker->section];
 		Assert(sticker->index >= 0 && sticker->index < set.pack.size());
-		Ui::showMediaPreview(set.pack[sticker->index]);
+		Ui::showMediaPreview(
+			set.pack[sticker->index]->stickerSetOrigin(),
+			set.pack[sticker->index]);
 		_previewShown = true;
 	}
 }

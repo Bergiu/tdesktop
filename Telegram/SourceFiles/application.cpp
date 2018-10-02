@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/crash_reports.h"
 #include "messenger.h"
 #include "base/timer.h"
+#include "base/concurrent_timer.h"
 #include "base/qthelp_url.h"
 #include "base/qthelp_regex.h"
 #include "core/update_checker.h"
@@ -64,11 +65,10 @@ QString _escapeFrom7bit(const QString &str) {
 
 } // namespace
 
-bool StartUrlRequiresActivate(const QString &url) {
+bool InternalPassportLink(const QString &url) {
 	const auto urlTrimmed = url.trimmed();
-	if (!urlTrimmed.startsWith(qstr("tg://"), Qt::CaseInsensitive)
-		|| Messenger::Instance().locked()) {
-		return true;
+	if (!urlTrimmed.startsWith(qstr("tg://"), Qt::CaseInsensitive)) {
+		return false;
 	}
 	const auto command = urlTrimmed.midRef(qstr("tg://").size());
 
@@ -78,11 +78,23 @@ bool StartUrlRequiresActivate(const QString &url) {
 		qsl("^passport/?\\?(.+)(#|$)"),
 		command,
 		matchOptions);
-	const auto authLegacyMatch = regex_match(
-		qsl("^resolve/?\\?domain=telegrampassport&(.+)(#|$)"),
+	const auto usernameMatch = regex_match(
+		qsl("^resolve/?\\?(.+)(#|$)"),
 		command,
 		matchOptions);
-	return !authMatch->hasMatch() && !authLegacyMatch->hasMatch();
+	const auto usernameValue = usernameMatch->hasMatch()
+		? url_parse_params(
+			usernameMatch->captured(1),
+			UrlParamNameTransform::ToLower).value(qsl("domain"))
+		: QString();
+	const auto authLegacy = (usernameValue == qstr("telegrampassport"));
+	return authMatch->hasMatch() || authLegacy;
+}
+
+bool StartUrlRequiresActivate(const QString &url) {
+	return Messenger::Instance().locked()
+		? true
+		: !InternalPassportLink(url);
 }
 
 Application::Application(
@@ -91,10 +103,9 @@ Application::Application(
 		char **argv)
 : QApplication(argc, argv)
 , _launcher(launcher)
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
-, _updateChecker(std::make_unique<Core::UpdateChecker>())
-#endif // TDESKTOP_DISABLE_AUTOUPDATE
-{
+, _updateChecker(Core::UpdaterDisabled()
+	? nullptr
+	: std::make_unique<Core::UpdateChecker>()) {
 	const auto d = QFile::encodeName(QDir(cWorkingDir()).absolutePath());
 	char h[33] = { 0 };
 	hashMd5Hex(d.constData(), d.size(), h);
@@ -204,13 +215,13 @@ void Application::socketError(QLocalSocket::LocalSocketError e) {
 	}
 #endif // !Q_OS_WINRT
 
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
-	if (!cNoStartUpdate() && Core::checkReadyUpdate()) {
+	if (!Core::UpdaterDisabled()
+		&& !cNoStartUpdate()
+		&& Core::checkReadyUpdate()) {
 		cSetRestartingUpdate(true);
 		DEBUG_LOG(("Application Info: installing update instead of starting app..."));
 		return App::quit();
 	}
-#endif // !TDESKTOP_DISABLE_AUTOUPDATE
 
 	singleInstanceChecked();
 }
@@ -384,9 +395,7 @@ void Application::closeApplication() {
 
 	_localSocket.close();
 
-#ifndef TDESKTOP_DISABLE_AUTOUPDATE
 	_updateChecker = nullptr;
-#endif // !TDESKTOP_DISABLE_AUTOUPDATE
 }
 
 inline Application *application() {
@@ -438,6 +447,7 @@ void adjustSingleTimers() {
 		a->adjustSingleTimers();
 	}
 	base::Timer::Adjust();
+	base::ConcurrentTimerEnvironment::Adjust();
 }
 
 void connect(const char *signal, QObject *object, const char *method) {
