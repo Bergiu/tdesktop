@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
 #include "numbers.h"
+#include "auth_session.h"
 #include "messenger.h"
 
 namespace Ui {
@@ -426,10 +427,11 @@ private:
 	int newlinePosition(const QString &text, int offset) const {
 		const auto length = text.size();
 		if (offset < length) {
-			auto ch = text.data() + offset;
-			for (const auto e = ch + length; ch != e; ++ch) {
+			const auto begin = text.data();
+			const auto end = begin + length;
+			for (auto ch = begin + offset; ch != end; ++ch) {
 				if (IsNewline(*ch)) {
-					return (ch - text.data());
+					return (ch - begin);
 				}
 			}
 		}
@@ -1003,7 +1005,7 @@ void FlatInput::refreshPlaceholder() {
 
 void FlatInput::contextMenuEvent(QContextMenuEvent *e) {
 	if (auto menu = createStandardContextMenu()) {
-		(new Ui::PopupMenu(nullptr, menu))->popup(e->globalPos());
+		(new Ui::PopupMenu(this, menu))->popup(e->globalPos());
 	}
 }
 
@@ -1136,7 +1138,7 @@ InputField::InputField(
 , _mode(mode)
 , _minHeight(st.heightMin)
 , _maxHeight(st.heightMax)
-, _inner(this)
+, _inner(std::make_unique<Inner>(this))
 , _lastTextWithTags(value)
 , _placeholderFactory(std::move(placeholderFactory)) {
 	_inner->setAcceptRichText(false);
@@ -1181,10 +1183,12 @@ InputField::InputField(
 	connect(&_touchTimer, SIGNAL(timeout()), this, SLOT(onTouchTimer()));
 
 	connect(_inner->document(), SIGNAL(contentsChange(int,int,int)), this, SLOT(onDocumentContentsChange(int,int,int)));
-	connect(_inner, SIGNAL(undoAvailable(bool)), this, SLOT(onUndoAvailable(bool)));
-	connect(_inner, SIGNAL(redoAvailable(bool)), this, SLOT(onRedoAvailable(bool)));
-	connect(_inner, SIGNAL(cursorPositionChanged()), this, SLOT(onCursorPositionChanged()));
-	if (App::wnd()) connect(_inner, SIGNAL(selectionChanged()), App::wnd(), SLOT(updateGlobalMenu()));
+	connect(_inner.get(), SIGNAL(undoAvailable(bool)), this, SLOT(onUndoAvailable(bool)));
+	connect(_inner.get(), SIGNAL(redoAvailable(bool)), this, SLOT(onRedoAvailable(bool)));
+	connect(_inner.get(), SIGNAL(cursorPositionChanged()), this, SLOT(onCursorPositionChanged()));
+	if (App::wnd()) {
+		connect(_inner.get(), SIGNAL(selectionChanged()), App::wnd(), SLOT(updateGlobalMenu()));
+	}
 
 	const auto bar = _inner->verticalScrollBar();
 	_scrollTop = bar->value();
@@ -1987,7 +1991,6 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 
 					if (ch + 1 < textEnd && ch->isHighSurrogate() && (ch + 1)->isLowSurrogate()) {
 						++ch;
-						++fragmentPosition;
 					}
 				}
 				if (action.type != ActionType::Invalid) {
@@ -2463,11 +2466,11 @@ void InputField::clearFocus() {
 }
 
 not_null<QTextEdit*> InputField::rawTextEdit() {
-	return _inner;
+	return _inner.get();
 }
 
 not_null<const QTextEdit*> InputField::rawTextEdit() const {
-	return _inner;
+	return _inner.get();
 }
 
 void InputField::keyPressEventInner(QKeyEvent *e) {
@@ -2849,7 +2852,7 @@ void InputField::commitInstantReplacement(
 		int from,
 		int till,
 		const QString &with,
-		base::optional<QString> checkOriginal) {
+		std::optional<QString> checkOriginal) {
 	const auto original = getTextWithTagsPart(from, till).text;
 	if (checkOriginal
 		&& checkOriginal->compare(original, Qt::CaseInsensitive) != 0) {
@@ -3170,7 +3173,7 @@ bool InputField::revertFormatReplace() {
 void InputField::contextMenuEventInner(QContextMenuEvent *e) {
 	if (const auto menu = _inner->createStandardContextMenu()) {
 		addMarkdownActions(menu, e);
-		_contextMenu = base::make_unique_q<Ui::PopupMenu>(nullptr, menu);
+		_contextMenu = base::make_unique_q<Ui::PopupMenu>(this, menu);
 		_contextMenu->popup(e->globalPos());
 	}
 }
@@ -3375,6 +3378,8 @@ void InputField::setErrorShown(bool error) {
 		startBorderAnimation();
 	}
 }
+
+InputField::~InputField() = default;
 
 MaskedInputField::MaskedInputField(
 	QWidget *parent,
@@ -3670,7 +3675,7 @@ void MaskedInputField::setPlaceholder(Fn<QString()> placeholderFactory) {
 
 void MaskedInputField::contextMenuEvent(QContextMenuEvent *e) {
 	if (auto menu = createStandardContextMenu()) {
-		(new Ui::PopupMenu(nullptr, menu))->popup(e->globalPos());
+		(new Ui::PopupMenu(this, menu))->popup(e->globalPos());
 	}
 }
 
@@ -4118,10 +4123,11 @@ void PhoneInput::focusInEvent(QFocusEvent *e) {
 
 void PhoneInput::clearText() {
 	QString phone;
-	if (App::self()) {
-		QVector<int> newPattern = phoneNumberParse(App::self()->phone());
+	if (AuthSession::Exists()) {
+		const auto self = Auth().user();
+		QVector<int> newPattern = phoneNumberParse(self->phone());
 		if (!newPattern.isEmpty()) {
-			phone = App::self()->phone().mid(0, newPattern.at(0));
+			phone = self->phone().mid(0, newPattern.at(0));
 		}
 	}
 	setText(phone);

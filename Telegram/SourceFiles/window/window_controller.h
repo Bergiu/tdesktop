@@ -15,6 +15,10 @@ class MainWidget;
 class HistoryMessage;
 class HistoryService;
 
+namespace Settings {
+enum class Type;
+} // namespace Settings
+
 namespace Media {
 namespace Player {
 class RoundController;
@@ -48,7 +52,7 @@ public:
 	DateClickHandler(Dialogs::Key chat, QDate date);
 
 	void setDate(QDate date);
-	void onClick(Qt::MouseButton) const override;
+	void onClick(ClickContext context) const override;
 
 private:
 	Dialogs::Key _chat;
@@ -113,6 +117,11 @@ public:
 	void showPeerInfo(
 		not_null<History*> history,
 		const SectionShow &params = SectionShow());
+
+	void showSettings(
+		Settings::Type type,
+		const SectionShow &params = SectionShow());
+	void showSettings(const SectionShow &params = SectionShow());
 
 	virtual ~Navigation() = default;
 
@@ -200,6 +209,7 @@ public:
 			anim::type animated = anim::type::normal) {
 		showSpecialLayer(nullptr, animated);
 	}
+	void removeLayerBlackout();
 
 	void showJumpToDate(
 		Dialogs::Key chat,

@@ -70,13 +70,20 @@ struct Settings {
 	friend inline constexpr auto is_flag_type(Type) { return true; };
 
 	QString path;
+	bool forceSubPath = false;
 	Output::Format format = Output::Format();
 
 	Types types = DefaultTypes();
 	Types fullChats = DefaultFullChats();
 	MediaSettings media;
 
+	MTPInputPeer singlePeer = MTP_inputPeerEmpty();
+
 	TimeId availableAt = 0;
+
+	bool onlySinglePeer() const {
+		return singlePeer.type() != mtpc_inputPeerEmpty;
+	}
 
 	static inline Types DefaultTypes() {
 		return Type::PersonalInfo

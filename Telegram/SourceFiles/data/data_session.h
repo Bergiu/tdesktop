@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "storage/storage_databases.h"
 #include "chat_helpers/stickers.h"
 #include "dialogs/dialogs_key.h"
 #include "data/data_groups.h"
@@ -35,6 +36,10 @@ class PanelController;
 } // namespace View
 } // namespace Export
 
+namespace Passport {
+struct SavedCredentials;
+} // namespace Passport
+
 namespace Data {
 
 class Feed;
@@ -52,13 +57,22 @@ public:
 		return *_session;
 	}
 
-	void startExport();
+	void startExport(PeerData *peer = nullptr);
+	void startExport(const MTPInputPeer &singlePeer);
 	void suggestStartExport(TimeId availableAt);
 	void clearExportSuggestion();
 	rpl::producer<Export::View::PanelController*> currentExportView() const;
 	bool exportInProgress() const;
 	void stopExportWithConfirmation(FnMut<void()> callback);
 	void stopExport();
+
+	const Passport::SavedCredentials *passportCredentials() const;
+	void rememberPassportCredentials(
+		Passport::SavedCredentials data,
+		TimeMs rememberFor);
+	void forgetPassportCredentials();
+
+	Storage::Cache::Database &cache();
 
 	[[nodiscard]] base::Variable<bool> &contactsLoaded() {
 		return _contactsLoaded;
@@ -239,6 +253,7 @@ public:
 	not_null<PhotoData*> photo(
 		PhotoId id,
 		const uint64 &access,
+		const QByteArray &fileReference,
 		TimeId date,
 		const ImagePtr &thumb,
 		const ImagePtr &medium,
@@ -257,7 +272,7 @@ public:
 	not_null<DocumentData*> document(
 		DocumentId id,
 		const uint64 &access,
-		int32 version,
+		const QByteArray &fileReference,
 		TimeId date,
 		const QVector<MTPDocumentAttribute> &attributes,
 		const QString &mime,
@@ -381,8 +396,8 @@ public:
 		const MTPPeerNotifySettings &settings);
 	void updateNotifySettings(
 		not_null<PeerData*> peer,
-		base::optional<int> muteForSeconds,
-		base::optional<bool> silentPosts = base::none);
+		std::optional<int> muteForSeconds,
+		std::optional<bool> silentPosts = std::nullopt);
 	bool notifyIsMuted(
 		not_null<const PeerData*> peer,
 		TimeMs *changesIn = nullptr) const;
@@ -394,6 +409,10 @@ public:
 	rpl::producer<> defaultChatNotifyUpdates() const;
 	rpl::producer<> defaultNotifyUpdates(
 		not_null<const PeerData*> peer) const;
+
+	void serviceNotification(
+		const TextWithEntities &message,
+		const MTPMessageMedia &media);
 
 	void forgetMedia();
 
@@ -424,6 +443,7 @@ private:
 	void photoApplyFields(
 		not_null<PhotoData*> photo,
 		const uint64 &access,
+		const QByteArray &fileReference,
 		TimeId date,
 		const ImagePtr &thumb,
 		const ImagePtr &medium,
@@ -438,7 +458,7 @@ private:
 	void documentApplyFields(
 		not_null<DocumentData*> document,
 		const uint64 &access,
-		int32 version,
+		const QByteArray &fileReference,
 		TimeId date,
 		const QVector<MTPDocumentAttribute> &attributes,
 		const QString &mime,
@@ -505,7 +525,14 @@ private:
 		not_null<const HistoryItem*> item,
 		Method method);
 
+	void insertCheckedServiceNotification(
+		const TextWithEntities &message,
+		const MTPMessageMedia &media,
+		TimeId date);
+
 	not_null<AuthSession*> _session;
+
+	Storage::DatabasePointer _cache;
 
 	std::unique_ptr<Export::ControllerWrap> _export;
 	std::unique_ptr<Export::View::PanelController> _exportPanel;
@@ -609,6 +636,11 @@ private:
 	base::Timer _unmuteByFinishedTimer;
 
 	MessageIdsList _mimeForwardIds;
+
+	using CredentialsWithGeneration = std::pair<
+		const Passport::SavedCredentials,
+		int>;
+	std::unique_ptr<CredentialsWithGeneration> _passportCredentials;
 
 	rpl::lifetime _lifetime;
 

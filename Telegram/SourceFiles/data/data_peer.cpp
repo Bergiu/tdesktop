@@ -70,8 +70,8 @@ PeerClickHandler::PeerClickHandler(not_null<PeerData*> peer)
 : _peer(peer) {
 }
 
-void PeerClickHandler::onClick(Qt::MouseButton button) const {
-	if (button == Qt::LeftButton && App::wnd()) {
+void PeerClickHandler::onClick(ClickContext context) const {
+	if (context.button == Qt::LeftButton && App::wnd()) {
 		auto controller = App::wnd()->controller();
 		if (_peer
 			&& _peer->isChannel()
@@ -115,7 +115,6 @@ void PeerData::updateNameDelayed(
 			return;
 		}
 	}
-
 	++nameVersion;
 	name = newName;
 	nameText.setText(st::msgNameStyle, name, Ui::NameTextOptions());
@@ -187,7 +186,7 @@ void PeerData::setUserpicPhoto(const MTPPhoto &data) {
 
 ImagePtr PeerData::currentUserpic() const {
 	if (_userpic) {
-		_userpic->load();
+		_userpic->load(userpicPhotoOrigin());
 		if (_userpic->loaded()) {
 			if (!useEmptyUserpic()) {
 				_userpicEmpty = nullptr;
@@ -200,7 +199,7 @@ ImagePtr PeerData::currentUserpic() const {
 
 void PeerData::paintUserpic(Painter &p, int x, int y, int size) const {
 	if (auto userpic = currentUserpic()) {
-		p.drawPixmap(x, y, userpic->pixCircled(size, size));
+		p.drawPixmap(x, y, userpic->pixCircled(userpicPhotoOrigin(), size, size));
 	} else {
 		_userpicEmpty->paint(p, x, y, x + size + x, size);
 	}
@@ -208,7 +207,7 @@ void PeerData::paintUserpic(Painter &p, int x, int y, int size) const {
 
 void PeerData::paintUserpicRounded(Painter &p, int x, int y, int size) const {
 	if (auto userpic = currentUserpic()) {
-		p.drawPixmap(x, y, userpic->pixRounded(size, size, ImageRoundRadius::Small));
+		p.drawPixmap(x, y, userpic->pixRounded(userpicPhotoOrigin(), size, size, ImageRoundRadius::Small));
 	} else {
 		_userpicEmpty->paintRounded(p, x, y, x + size + x, size);
 	}
@@ -216,7 +215,7 @@ void PeerData::paintUserpicRounded(Painter &p, int x, int y, int size) const {
 
 void PeerData::paintUserpicSquare(Painter &p, int x, int y, int size) const {
 	if (auto userpic = currentUserpic()) {
-		p.drawPixmap(x, y, userpic->pix(size, size));
+		p.drawPixmap(x, y, userpic->pix(userpicPhotoOrigin(), size, size));
 	} else {
 		_userpicEmpty->paintSquare(p, x, y, x + size + x, size);
 	}
@@ -239,7 +238,7 @@ void PeerData::saveUserpicRounded(const QString &path, int size) const {
 
 QPixmap PeerData::genUserpic(int size) const {
 	if (auto userpic = currentUserpic()) {
-		return userpic->pixCircled(size, size);
+		return userpic->pixCircled(userpicPhotoOrigin(), size, size);
 	}
 	auto result = QImage(QSize(size, size) * cIntRetinaFactor(), QImage::Format_ARGB32_Premultiplied);
 	result.setDevicePixelRatio(cRetinaFactor());
@@ -253,7 +252,7 @@ QPixmap PeerData::genUserpic(int size) const {
 
 QPixmap PeerData::genUserpicRounded(int size) const {
 	if (auto userpic = currentUserpic()) {
-		return userpic->pixRounded(size, size, ImageRoundRadius::Small);
+		return userpic->pixRounded(userpicPhotoOrigin(), size, size, ImageRoundRadius::Small);
 	}
 	auto result = QImage(QSize(size, size) * cIntRetinaFactor(), QImage::Format_ARGB32_Premultiplied);
 	result.setDevicePixelRatio(cRetinaFactor());
@@ -437,8 +436,6 @@ void UserData::setName(const QString &newFirstName, const QString &newLastName, 
 void UserData::setPhone(const QString &newPhone) {
 	if (_phone != newPhone) {
 		_phone = newPhone;
-		if (bareId() == Auth().userId()) {
-		}
 	}
 }
 
@@ -1042,15 +1039,16 @@ void ChannelData::setAdminRights(const MTPChannelAdminRights &rights) {
 	}
 	_adminRights.set(rights.c_channelAdminRights().vflags.v);
 	if (isMegagroup()) {
+		const auto self = Auth().user();
 		if (hasAdminRights()) {
 			if (!amCreator()) {
 				auto me = MegagroupInfo::Admin { rights };
 				me.canEdit = false;
-				mgInfo->lastAdmins.emplace(App::self(), me);
+				mgInfo->lastAdmins.emplace(self, me);
 			}
-			mgInfo->lastRestricted.remove(App::self());
+			mgInfo->lastRestricted.remove(self);
 		} else {
-			mgInfo->lastAdmins.remove(App::self());
+			mgInfo->lastAdmins.remove(self);
 		}
 
 		auto amAdmin = hasAdminRights() || amCreator();
@@ -1067,15 +1065,16 @@ void ChannelData::setRestrictedRights(const MTPChannelBannedRights &rights) {
 	_restrictedUntill = rights.c_channelBannedRights().vuntil_date.v;
 	_restrictions.set(rights.c_channelBannedRights().vflags.v);
 	if (isMegagroup()) {
+		const auto self = Auth().user();
 		if (hasRestrictions()) {
 			if (!amCreator()) {
 				auto me = MegagroupInfo::Restricted { rights };
-				mgInfo->lastRestricted.emplace(App::self(), me);
+				mgInfo->lastRestricted.emplace(self, me);
 			}
-			mgInfo->lastAdmins.remove(App::self());
+			mgInfo->lastAdmins.remove(self);
 			Data::ChannelAdminChanges(this).feed(Auth().userId(), false);
 		} else {
-			mgInfo->lastRestricted.remove(App::self());
+			mgInfo->lastRestricted.remove(self);
 		}
 	}
 	Notify::peerUpdatedDelayed(this, UpdateFlag::ChannelRightsChanged | UpdateFlag::AdminsChanged | UpdateFlag::BannedUsersChanged);

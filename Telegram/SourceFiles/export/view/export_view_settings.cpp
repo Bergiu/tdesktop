@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "export/view/export_view_settings.h"
 
 #include "export/output/export_output_abstract.h"
+#include "export/view/export_view_panel_controller.h"
 #include "lang/lang_keys.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/buttons.h"
@@ -20,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/fade_wrap.h"
 #include "platform/platform_specific.h"
 #include "core/file_utilities.h"
+#include "auth_session.h"
 #include "styles/style_widgets.h"
 #include "styles/style_export.h"
 #include "styles/style_boxes.h"
@@ -55,11 +57,27 @@ int SizeLimitByIndex(int index) {
 	return megabytes() * kMegabyte;
 }
 
+PeerId ReadPeerId(const MTPInputPeer &data) {
+	return data.match([](const MTPDinputPeerUser &data) {
+		return peerFromUser(data.vuser_id.v);
+	}, [](const MTPDinputPeerChat &data) {
+		return peerFromChat(data.vchat_id.v);
+	}, [](const MTPDinputPeerChannel &data) {
+		return peerFromChannel(data.vchannel_id.v);
+	}, [](const MTPDinputPeerSelf &data) {
+		return Auth().userPeerId();
+	}, [](const MTPDinputPeerEmpty &data) {
+		return PeerId(0);
+	});
+}
+
 } // namespace
 
 SettingsWidget::SettingsWidget(QWidget *parent, Settings data)
 : RpWidget(parent)
+, _singlePeerId(ReadPeerId(data.singlePeer))
 , _internal_data(std::move(data)) {
+	ResolveSettings(_internal_data);
 	setupContent();
 }
 
@@ -77,9 +95,10 @@ void SettingsWidget::setupContent() {
 	const auto scroll = Ui::CreateChild<Ui::ScrollArea>(
 		this,
 		st::boxLayerScroll);
-	const auto wrap = scroll->setOwnedWidget(object_ptr<Ui::IgnoreMargins>(
-		scroll,
-		object_ptr<Ui::VerticalLayout>(scroll)));
+	const auto wrap = scroll->setOwnedWidget(
+		object_ptr<Ui::OverrideMargins>(
+			scroll,
+			object_ptr<Ui::VerticalLayout>(scroll)));
 	const auto content = static_cast<Ui::VerticalLayout*>(wrap->entity());
 
 	const auto buttons = setupButtons(scroll, wrap);
@@ -95,6 +114,17 @@ void SettingsWidget::setupContent() {
 }
 
 void SettingsWidget::setupOptions(not_null<Ui::VerticalLayout*> container) {
+	if (!_singlePeerId) {
+		setupFullExportOptions(container);
+	}
+	setupMediaOptions(container);
+	if (!_singlePeerId) {
+		setupOtherOptions(container);
+	}
+}
+
+void SettingsWidget::setupFullExportOptions(
+		not_null<Ui::VerticalLayout*> container) {
 	addOptionWithAbout(
 		container,
 		lng_export_option_info,
@@ -127,38 +157,21 @@ void SettingsWidget::setupOptions(not_null<Ui::VerticalLayout*> container) {
 		container,
 		lng_export_option_public_channels,
 		Type::PublicChannels);
-
-	setupMediaOptions(container);
-
-	addHeader(container, lng_export_header_other);
-	addOptionWithAbout(
-		container,
-		lng_export_option_sessions,
-		Type::Sessions,
-		lng_export_option_sessions_about);
-	addOptionWithAbout(
-		container,
-		lng_export_option_other,
-		Type::OtherData,
-		lng_export_option_other_about);
 }
 
 void SettingsWidget::setupMediaOptions(
 		not_null<Ui::VerticalLayout*> container) {
+	if (_singlePeerId != 0) {
+		addMediaOptions(container);
+		return;
+	}
 	const auto mediaWrap = container->add(
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
 			container,
 			object_ptr<Ui::VerticalLayout>(container)));
 	const auto media = mediaWrap->entity();
 	addHeader(media, lng_export_header_media);
-	addMediaOption(media, lng_export_option_photos, MediaType::Photo);
-	addMediaOption(media, lng_export_option_video_files, MediaType::Video);
-	addMediaOption(media, lng_export_option_voice_messages, MediaType::VoiceMessage);
-	addMediaOption(media, lng_export_option_video_messages, MediaType::VideoMessage);
-	addMediaOption(media, lng_export_option_stickers, MediaType::Sticker);
-	addMediaOption(media, lng_export_option_gifs, MediaType::GIF);
-	addMediaOption(media, lng_export_option_files, MediaType::File);
-	addSizeSlider(media);
+	addMediaOptions(media);
 
 	value() | rpl::map([](const Settings &data) {
 		return data.types;
@@ -178,8 +191,27 @@ void SettingsWidget::setupMediaOptions(
 	}, mediaWrap->lifetime());
 }
 
+void SettingsWidget::setupOtherOptions(
+		not_null<Ui::VerticalLayout*> container) {
+	addHeader(container, lng_export_header_other);
+	addOptionWithAbout(
+		container,
+		lng_export_option_sessions,
+		Type::Sessions,
+		lng_export_option_sessions_about);
+	addOptionWithAbout(
+		container,
+		lng_export_option_other,
+		Type::OtherData,
+		lng_export_option_other_about);
+}
+
 void SettingsWidget::setupPathAndFormat(
 		not_null<Ui::VerticalLayout*> container) {
+	if (_singlePeerId != 0) {
+		addLocationLabel(container);
+		return;
+	}
 	const auto formatGroup = std::make_shared<Ui::RadioenumGroup<Format>>(
 		readData().format);
 	formatGroup->setChangedCallback([=](Format format) {
@@ -205,17 +237,12 @@ void SettingsWidget::setupPathAndFormat(
 
 void SettingsWidget::addLocationLabel(
 		not_null<Ui::VerticalLayout*> container) {
+#ifndef OS_MAC_STORE
 	auto pathLabel = value() | rpl::map([](const Settings &data) {
 		return data.path;
 	}) | rpl::distinct_until_changed(
 	) | rpl::map([](const QString &path) {
-		const auto check = [](const QString &value) {
-			const auto result = value.endsWith('/')
-				? value.mid(0, value.size() - 1)
-				: value;
-			return (cPlatform() == dbipWindows) ? result.toLower() : result;
-		};
-		const auto text = (check(path) == check(psDownloadPath()))
+		const auto text = IsDefaultPath(path)
 			? QString("Downloads/Telegram Desktop")
 			: path;
 		auto pathLink = TextWithEntities{
@@ -241,6 +268,7 @@ void SettingsWidget::addLocationLabel(
 		chooseFolder();
 		return false;
 	});
+#endif // OS_MAC_STORE
 }
 
 not_null<Ui::RpWidget*> SettingsWidget::setupButtons(
@@ -269,7 +297,7 @@ not_null<Ui::RpWidget*> SettingsWidget::setupButtons(
 	}));
 
 	value() | rpl::map([](const Settings &data) {
-		return data.types != Types(0);
+		return (data.types != Types(0)) || data.onlySinglePeer();
 	}) | rpl::distinct_until_changed(
 	) | rpl::start_with_next([=](bool canStart) {
 		refreshButtons(buttons, canStart);
@@ -382,6 +410,30 @@ void SettingsWidget::addChatOption(
 	}
 }
 
+void SettingsWidget::addMediaOptions(
+		not_null<Ui::VerticalLayout*> container) {
+	addMediaOption(container, lng_export_option_photos, MediaType::Photo);
+	addMediaOption(
+		container,
+		lng_export_option_video_files,
+		MediaType::Video);
+	addMediaOption(
+		container,
+		lng_export_option_voice_messages,
+		MediaType::VoiceMessage);
+	addMediaOption(
+		container,
+		lng_export_option_video_messages,
+		MediaType::VideoMessage);
+	addMediaOption(
+		container,
+		lng_export_option_stickers,
+		MediaType::Sticker);
+	addMediaOption(container, lng_export_option_gifs, MediaType::GIF);
+	addMediaOption(container, lng_export_option_files, MediaType::File);
+	addSizeSlider(container);
+}
+
 void SettingsWidget::addMediaOption(
 		not_null<Ui::VerticalLayout*> container,
 		LangKey key,
@@ -414,27 +466,19 @@ void SettingsWidget::addSizeSlider(
 		object_ptr<Ui::MediaSlider>(container, st::exportFileSizeSlider),
 		st::exportFileSizePadding);
 	slider->resize(st::exportFileSizeSlider.seekSize);
-	slider->setAlwaysDisplayMarker(true);
-	slider->setDirection(Ui::ContinuousSlider::Direction::Horizontal);
-	for (auto i = 0; i != kSizeValueCount + 1; ++i) {
-		if (readData().media.sizeLimit <= SizeLimitByIndex(i)) {
-			slider->setValue(i / float64(kSizeValueCount));
-			break;
-		}
-	}
+	slider->setPseudoDiscrete(
+		kSizeValueCount + 1,
+		SizeLimitByIndex,
+		readData().media.sizeLimit,
+		[=](int limit) {
+			changeData([&](Settings &data) {
+				data.media.sizeLimit = limit;
+			});
+		});
 
 	const auto label = Ui::CreateChild<Ui::LabelSimple>(
 		container.get(),
 		st::exportFileSizeLabel);
-	slider->setAdjustCallback([=](float64 value) {
-		return std::round(value * kSizeValueCount) / kSizeValueCount;
-	});
-	slider->setChangeProgressCallback([=](float64 value) {
-		const auto index = int(std::round(value * kSizeValueCount));
-		changeData([&](Settings &data) {
-			data.media.sizeLimit = SizeLimitByIndex(index);
-		});
-	});
 	value() | rpl::map([](const Settings &data) {
 		return data.media.sizeLimit;
 	}) | rpl::start_with_next([=](int sizeLimit) {
@@ -456,7 +500,6 @@ void SettingsWidget::addSizeSlider(
 			st::exportFileSizePadding.right(),
 			geometry.y() - label->height() - st::exportFileSizeLabelBottom);
 	}, label->lifetime());
-
 }
 
 void SettingsWidget::refreshButtons(
@@ -477,7 +520,10 @@ void SettingsWidget::refreshButtons(
 		: nullptr;
 	if (start) {
 		start->show();
-		_startClicks = start->clicks();
+		_startClicks = start->clicks(
+		) | rpl::map([] {
+			return rpl::empty_value();
+		});
 
 		container->sizeValue(
 		) | rpl::start_with_next([=](QSize size) {
@@ -492,7 +538,10 @@ void SettingsWidget::refreshButtons(
 		langFactory(lng_cancel),
 		st::defaultBoxButton);
 	cancel->show();
-	_cancelClicks = cancel->clicks();
+	_cancelClicks = cancel->clicks(
+	) | rpl::map([] {
+		return rpl::empty_value();
+	});
 
 	rpl::combine(
 		container->sizeValue(),
@@ -509,6 +558,7 @@ void SettingsWidget::chooseFolder() {
 	const auto callback = [=](QString &&result) {
 		changeData([&](Settings &data) {
 			data.path = std::move(result);
+			data.forceSubPath = IsDefaultPath(data.path);
 		});
 	};
 	FileDialog::GetFolder(

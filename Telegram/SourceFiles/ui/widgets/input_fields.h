@@ -221,7 +221,7 @@ public:
 		int from,
 		int till,
 		const QString &with,
-		base::optional<QString> checkOriginal = base::none);
+		std::optional<QString> checkOriginal = std::nullopt);
 	bool commitMarkdownReplacement(
 		int from,
 		int till,
@@ -296,6 +296,8 @@ public:
 	const rpl::variable<int> &scrollTop() const;
 	int scrollTopMax() const;
 	void scrollTo(int top);
+
+	~InputField();
 
 private slots:
 	void onTouchTimer();
@@ -413,7 +415,7 @@ private:
 	bool _forcePlaceholderHidden = false;
 	bool _reverseMarkdownReplacement = false;
 
-	object_ptr<Inner> _inner;
+	const std::unique_ptr<Inner> _inner;
 
 	TextWithTags _lastTextWithTags;
 	std::vector<MarkdownTag> _lastMarkdownTags;
